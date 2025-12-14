@@ -1,11 +1,10 @@
-// server_fstack_simple_fixed.cpp
-// 修复了partial receive问题的简单版本
-
+// server_fstack.cpp
 #include <array>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #include <sys/types.h>
 #include <netinet/in.h>
@@ -18,25 +17,26 @@ constexpr int LISTEN_PORT = 8080;
 constexpr int BACKLOG = 1024;
 constexpr int MAX_CLIENTS = 1024;
 
-// 跟 config.ini 里的 [port0].addr 保持一致
-static const char *g_bind_ip = "192.168.5.220";
+// Must match [port0].addr in config.ini
+//static const char *g_bind_ip = "192.168.5.220";
 
 static int g_listenfd = -1;
 
-// 每个连接的状态
+// Per-connection state
 struct ClientState {
     int fd = -1;
-    Msg recv_msg;                // 正在接收的消息
-    size_t recv_bytes = 0;       // 已接收的字节数
-    Msg send_msg;                // 要发送的消息
-    size_t send_bytes = 0;       // 已发送的字节数
-    bool has_full_msg = false;   // 是否有完整的消息待发送
+    std::vector<char> recv_buffer;
+    size_t recv_bytes = 0;
+    size_t expected_size = sizeof(Msg);
+    std::vector<char> send_buffer;
+    size_t send_bytes = 0;
+    bool has_full_msg = false;
 };
 
 static std::array<ClientState, MAX_CLIENTS> g_client_states{};
 static int g_client_count = 0;
 
-// 辅助：把 fd 从数组中删除
+// Helper: remove fd from the array
 static void remove_client_at(int idx)
 {
     if (idx < 0 || idx >= g_client_count)
@@ -47,86 +47,102 @@ static void remove_client_at(int idx)
         ff_close(state.fd);
     }
 
-    // 用最后一个覆盖当前
+    // Replace removed entry with the last one
     if (idx < g_client_count - 1) {
         g_client_states[idx] = std::move(g_client_states[g_client_count - 1]);
     }
-    // 重置最后一个位置的状态
+    // Reset the final slot state
     g_client_states[g_client_count - 1] = ClientState{};
     g_client_count--;
 }
 
-// 接收完整消息（非阻塞）
-// 返回: -1=出错, 0=需要更多数据, 1=收到完整消息
+// Receive a complete message (non-blocking)
+// Returns: -1=error, 0=need more data, 1=got full message
 static int recv_message(ClientState& state, int idx)
 {
-    // 如果已经有完整消息，先发送
+    // Already have a full message buffered
     if (state.has_full_msg) {
-	    perror("full msg");
         return 1;
     }
-    
-    // 继续接收剩余的数据
-    char* buffer = reinterpret_cast<char*>(&state.recv_msg);
-    
-    while (state.recv_bytes < sizeof(Msg)) {
-	    printf("recv bytes: %d\n", (int)state.recv_bytes);
-        ssize_t n = ff_recv(state.fd, 
-                           buffer + state.recv_bytes,
-                           sizeof(Msg) - state.recv_bytes, 
-                           0);
-	    printf("n: %d\n", (int)n);
-        
+
+    if (state.recv_buffer.size() < state.expected_size) {
+        state.recv_buffer.resize(state.expected_size);
+    }
+
+    while (state.recv_bytes < state.expected_size) {
+        ssize_t n = ff_recv(state.fd,
+                            state.recv_buffer.data() + state.recv_bytes,
+                            state.expected_size - state.recv_bytes,
+                            0);
+
         if (n > 0) {
             state.recv_bytes += n;
+
+            if (state.recv_bytes == sizeof(Msg) &&
+                state.expected_size == sizeof(Msg)) {
+                auto* header = reinterpret_cast<Msg*>(state.recv_buffer.data());
+                if (header->payload_size < sizeof(Msg)) {
+                    std::fprintf(stderr,
+                                 "client fd=%d payload_size=%" PRIu32 " below header size %zu\n",
+                                 state.fd, header->payload_size, sizeof(Msg));
+                    remove_client_at(idx);
+                    return -1;
+                }
+
+                state.expected_size = header->payload_size;
+                state.recv_buffer.resize(state.expected_size);
+            }
         } else if (n == 0) {
-            // 对端正常关闭
             std::fprintf(stderr, "client fd=%d closed (recv)\n", state.fd);
             remove_client_at(idx);
             return -1;
         } else {
-            // n < 0
             if (errno == EINTR) {
-                // 信号打断，继续尝试
                 continue;
             }
             if (errno == EAGAIN || errno == EPERM) {
-                // 没有数据了，下次再试
                 return 0;
             }
-            // 其它错误
             perror("ff_recv");
             remove_client_at(idx);
             return -1;
         }
     }
-    
-    perror("got msg");
-    // 收到完整消息
+
+    state.send_buffer = state.recv_buffer;
+    state.send_bytes = 0;
     state.has_full_msg = true;
+
+    state.recv_buffer.assign(sizeof(Msg), 0);
+    state.expected_size = sizeof(Msg);
+    state.recv_bytes = 0;
+
     return 1;
 }
 
-// 发送完整消息（非阻塞）
-// 返回: -1=出错, 0=发送中, 1=发送完成
+// Send a complete message (non-blocking)
+// Returns: -1=error, 0=in progress, 1=done
 static int send_message(ClientState& state, int idx)
 {
     if (!state.has_full_msg) {
-        return 1;  // 没有消息要发送
+        return 1;  // Nothing to send
     }
-    
-    const char* buffer = reinterpret_cast<const char*>(&state.recv_msg);
-    
-    while (state.send_bytes < sizeof(Msg)) {
+
+    if (state.send_buffer.empty()) {
+        state.has_full_msg = false;
+        return 1;
+    }
+
+    while (state.send_bytes < state.send_buffer.size()) {
         ssize_t n = ff_send(state.fd,
-                           buffer + state.send_bytes,
-                           sizeof(Msg) - state.send_bytes,
+                           state.send_buffer.data() + state.send_bytes,
+                           state.send_buffer.size() - state.send_bytes,
                            0);
         
         if (n > 0) {
             state.send_bytes += n;
         } else if (n == 0) {
-            // 对端关闭
+            // Peer closed the connection
             std::fprintf(stderr, "client fd=%d closed (send)\n", state.fd);
             remove_client_at(idx);
             return -1;
@@ -136,7 +152,7 @@ static int send_message(ClientState& state, int idx)
                 continue;
             }
             if (errno == EAGAIN || errno == EPERM) {
-                // 不能再发了，下次继续
+                // Can't send now; retry on next loop
                 return 0;
             }
             perror("ff_send");
@@ -145,41 +161,39 @@ static int send_message(ClientState& state, int idx)
         }
     }
     
-    // 发送完成，重置状态
-    state.recv_bytes = 0;
+    // Send complete; reset state
     state.send_bytes = 0;
     state.has_full_msg = false;
+    state.send_buffer.clear();
     
     return 1;
 }
 
-// 尝试对单个 client 做一次 non-blocking recv + echo
+// Run one non-blocking recv+echo attempt for a single client
 static void process_one_client(int idx)
 {
     ClientState& state = g_client_states[idx];
     
-    // 1. 尝试接收完整消息
+    // 1. Attempt to receive a complete message
     int recv_result = recv_message(state, idx);
     if (recv_result < 0) {
-	    perror("recv error");
-        return;  // 出错或需要更多数据
+        return;  // Error or need more data
     }
     
-    // 2. 尝试发送消息
+    // 2. Attempt to send the message
     int send_result = send_message(state, idx);
     if (send_result < 0) {
-	    perror("send error");
-        return;  // 出错
+        return;  // Error
     }
     
-    // 如果发送还在进行中，下一轮继续
+    // Continue next loop if still sending
 }
 
 static int server_loop(void *arg)
 {
     (void)arg;
 
-    // 第一次调用时初始化 listenfd
+    // Initialize the listen fd on first call
     if (g_listenfd < 0) {
         g_listenfd = ff_socket(AF_INET, SOCK_STREAM, 0);
         if (g_listenfd < 0) {
@@ -198,10 +212,10 @@ static int server_loop(void *arg)
         addr.sin_family = AF_INET;
         addr.sin_port   = htons(LISTEN_PORT);
 
-        if (inet_pton(AF_INET, g_bind_ip, &addr.sin_addr) != 1) {
-            perror("inet_pton g_bind_ip");
-            return -1;
-        }
+        // if (inet_pton(AF_INET, g_bind_ip, &addr.sin_addr) != 1) {
+        //     perror("inet_pton g_bind_ip");
+        //     return -1;
+        // }
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
         if (ff_bind(g_listenfd,
@@ -218,15 +232,15 @@ static int server_loop(void *arg)
 
         std::printf("F-Stack simple echo server listening on %s:%d\n",
                     g_bind_ip, LISTEN_PORT);
-        std::fprintf(stdout, "msg size: %zu\n", sizeof(Msg));
+        std::fprintf(stdout, "Msg header size: %zu bytes\n", sizeof(Msg));
     }
 
-    // 1) 单轮 accept 尽可能多的新连接
+    // 1) Accept as many new connections as possible per loop
     for (;;) {
         int cfd = ff_accept(g_listenfd, nullptr, nullptr);
         if (cfd < 0) {
             if (errno == EAGAIN || errno == EINTR || errno == EPERM) {
-                // 当前没有更多 pending 的连接
+                // No more pending connections
                 break;
             }
             perror("ff_accept");
@@ -239,31 +253,34 @@ static int server_loop(void *arg)
             continue;
         }
 
-        // 初始化新客户端状态
+        // Initialize new client state
         ClientState& state = g_client_states[g_client_count];
         state.fd = cfd;
         state.recv_bytes = 0;
+        state.expected_size = sizeof(Msg);
+        state.recv_buffer.assign(sizeof(Msg), 0);
         state.send_bytes = 0;
+        state.send_buffer.clear();
         state.has_full_msg = false;
         
         g_client_count++;
         // printf("new client fd=%d, total=%d\n", cfd, g_client_count);
     }
 
-    // 2) 单轮遍历所有已连接的 client
+    // 2) Walk every connected client in this loop
     int idx = 0;
     while (idx < g_client_count) {
-        int current_client_count = g_client_count;  // 保存当前值
+        int current_client_count = g_client_count;  // Save current value
         
         process_one_client(idx);
         
-        // 如果客户端被移除，g_client_count会减少
-        // 如果当前客户端还在，继续处理下一个
+        // If a client was removed, g_client_count shrinks
+        // If the current client remains, move to the next one
         if (g_client_count == current_client_count) {
-            // 客户端没被移除
+            // Client not removed
             idx++;
         }
-        // 如果客户端被移除了，idx保持不变（因为下一个客户端已经移动到当前idx位置）
+        // If a client was removed, idx stays because next client moved here
     }
 
     return 0;

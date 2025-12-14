@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unistd.h>
+#include <vector>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -13,26 +14,21 @@
 
 #include "common.h"
 
-constexpr int LISTEN_PORT = 8081;
+constexpr int LISTEN_PORT = 8080;
 constexpr int BACKLOG = 1024;
 
-static bool recv_full_msg(int fd, Msg &msg) {
+static bool recv_all_bytes(int fd, char* buffer, size_t len)
+{
     size_t received = 0;
-    auto *buffer = reinterpret_cast<char*>(&msg);
-
-    printf("size of msg is %d\n", (int)sizeof(Msg));
-
-    while (received < sizeof(Msg)) {
-        ssize_t n = recv(fd, buffer + received,
-                         sizeof(Msg) - received, 0);
-    printf("size of msg is %d\n", (int)n);
+    while (received < len) {
+        ssize_t n = recv(fd, buffer + received, len - received, 0);
         if (n == 0) {
-            // peer closed
             return false;
         }
         if (n < 0) {
-            if (errno == EINTR)
+            if (errno == EINTR) {
                 continue;
+            }
             perror("recv");
             return false;
         }
@@ -43,20 +39,18 @@ static bool recv_full_msg(int fd, Msg &msg) {
     return true;
 }
 
-static bool send_full_msg(int fd, const Msg &msg) {
+static bool send_all_bytes(int fd, const char* buffer, size_t len)
+{
     size_t sent = 0;
-    auto *buffer = reinterpret_cast<const char*>(&msg);
-
-    while (sent < sizeof(Msg)) {
-        ssize_t n = send(fd, buffer + sent,
-                         sizeof(Msg) - sent, 0);
+    while (sent < len) {
+        ssize_t n = send(fd, buffer + sent, len - sent, 0);
         if (n == 0) {
-            // peer closed while we were sending
             return false;
         }
         if (n < 0) {
-            if (errno == EINTR)
+            if (errno == EINTR) {
                 continue;
+            }
             perror("send");
             return false;
         }
@@ -67,12 +61,43 @@ static bool send_full_msg(int fd, const Msg &msg) {
     return true;
 }
 
+static bool recv_full_msg(int fd, std::vector<char>& buffer)
+{
+    Msg header{};
+    if (!recv_all_bytes(fd, reinterpret_cast<char*>(&header), sizeof(header))) {
+        return false;
+    }
+
+    if (header.payload_size < sizeof(Msg)) {
+        std::fprintf(stderr,
+                     "invalid payload_size=%" PRIu32 " (< header size %zu)\n",
+                     header.payload_size, sizeof(Msg));
+        return false;
+    }
+
+    const size_t payload_bytes = header.payload_size - sizeof(Msg);
+    buffer.resize(header.payload_size);
+    std::memcpy(buffer.data(), &header, sizeof(header));
+
+    if (payload_bytes > 0 &&
+        !recv_all_bytes(fd, buffer.data() + sizeof(Msg), payload_bytes)) {
+        return false;
+    }
+
+    return true;
+}
+
+static bool send_full_msg(int fd, const std::vector<char>& buffer)
+{
+    return send_all_bytes(fd, buffer.data(), buffer.size());
+}
+
 static void handle_conn(int fd) {
-    Msg msg{};
+    std::vector<char> buffer;
     for (;;) {
-        if (!recv_full_msg(fd, msg))
+        if (!recv_full_msg(fd, buffer))
             break;
-        if (!send_full_msg(fd, msg))
+        if (!send_full_msg(fd, buffer))
             break;
     }
 
@@ -105,7 +130,7 @@ int main() {
     }
 
     printf("Kernel echo server listening on port %d\n", LISTEN_PORT);
-    printf("Msg size is %d\n", MSG_SIZE);
+    printf("Minimum total message size: %zu bytes\n", sizeof(Msg));
 
     for (;;) {
         struct sockaddr_in cliaddr;
@@ -119,7 +144,6 @@ int main() {
             break;
         }
 
-        // 简化：单连接处理
         handle_conn(conn_fd);
     }
 
