@@ -230,8 +230,8 @@ static int server_loop(void *arg)
             return -1;
         }
 
-        std::printf("F-Stack simple echo server listening on %s:%d\n",
-                    g_bind_ip, LISTEN_PORT);
+        std::printf("F-Stack simple echo server listening on %d\n",
+                    LISTEN_PORT);
         std::fprintf(stdout, "Msg header size: %zu bytes\n", sizeof(Msg));
     }
 

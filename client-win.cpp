@@ -349,13 +349,17 @@ static bool ensure_directory_exists(const std::string& path)
         return (info.st_mode & _S_IFDIR) != 0;
     }
     if (errno != ENOENT) {
-        fprintf(stderr, "Failed to access %s: %s\n", path.c_str(), strerror(errno));
+        char err_buf[256];
+        strerror_s(err_buf, sizeof(err_buf), errno);
+        fprintf(stderr, "Failed to access %s: %s\n", path.c_str(), err_buf);
         return false;
     }
     if (_mkdir(path.c_str()) == 0 || errno == EEXIST) {
         return true;
     }
-    fprintf(stderr, "Failed to create directory %s: %s\n", path.c_str(), strerror(errno));
+    char err_buf[256];
+    strerror_s(err_buf, sizeof(err_buf), errno);
+    fprintf(stderr, "Failed to create directory %s: %s\n", path.c_str(), err_buf);
     return false;
 }
 
@@ -469,7 +473,7 @@ int main(int argc, char* argv[])
                                             payload_size,
                                             msg_count,
                                             &summary,
-                                            sweep_payloads ? &samples : nullptr)
+                                            sweep_payloads ? &samples : nullptr);
         if (!ok) {
             overall_success = false;
             continue;
