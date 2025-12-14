@@ -35,7 +35,7 @@ def create_performance_charts(report_name: str):
 
     # Subplot 1
     ax1 = axes[0, 0]
-    ax1.plot(packet_sizes, avg_latency, 'b-o', label='avg lat', linewidth=2, markersize=8)
+    #ax1.plot(packet_sizes, avg_latency, 'b-o', label='avg lat', linewidth=2, markersize=8)
     ax1.plot(packet_sizes, p50_latency, 'm-*', label='P50 lat', linewidth=2, markersize=8)
     ax1.plot(packet_sizes, p90_latency, 'c-p', label='P90 lat', linewidth=2, markersize=8)
     #ax1.plot(packet_sizes, p99_latency, 'r-^', label='P99 lat', linewidth=2, markersize=8)
