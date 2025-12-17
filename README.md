@@ -2,7 +2,7 @@ Usage
 
 Kernel Server
 ```
-gcc -O2 -Wall -o server_kernel server_kernel.c
+g++ -O2 -Wall -o server_kernel server_kernel.cpp
 
 ./server_kernel
 ```
@@ -16,14 +16,11 @@ sudo mount -t hugetlbfs none /mnt/huge
 sudo modprobe vfio-pci
 sudo ./usertools/dpdk-devbind.py -b vfio-pci 0000:00:08.0 // update last according to --status
 
-gcc -O2 -Wall -I/f-stack/lib -I/f-stack/dpdk/build/include \
-     -o server_fstack server_fstack.c \
-     -L/f-stack/lib  -L/f-stack/dpdk/build/lib \
-     -L/f-stack/dpdk/build/drivers -lfstack \
-     -Wl,--as-needed \
-     -lrte_eal -lrte_ethdev -lrte_mbuf -lrte_mempool -lrte_ring \
-     -lrte_kvargs -lrte_net -lrte_log -lrte_timer -lrte_net_bond \
-     -lcrypto -lpthread -ldl -lm
+g++ -O2 -Wall   -o server_fstack server_fstack.cpp -lfstack \
+    -Wl,--no-as-needed   -lrte_eal -lrte_ethdev -lrte_mbuf \
+    -lrte_mempool -lrte_ring  -lrte_kvargs -lrte_net -lrte_log \
+    -lrte_timer -lrte_net_bond  \
+    -lcrypto -lpthread -ldl -lm
 
 // modify config.ini [port0] if needed
 sudo ./server_fstack
@@ -31,7 +28,7 @@ sudo ./server_fstack
 
 Client Side
 ```
-gcc -O2 -Wall client.cpp -o client
+g++ -O2 -Wall client.cpp -o client
 
 // Usage: ./client <server_ip> <port> <msg_count> <payload_size|-1> [output_basename]
 // payload -1 test all size from 64, 128, 256, ... 8192 
