@@ -1,0 +1,17 @@
+# 1. 并发连接数测试
+for conn in 1 10 100 1000; do
+    # 测试不同并发下的性能
+done
+
+# 2. 不同协议测试
+# TCP vs UDP
+
+# 3. 长连接 vs 短连接测试
+
+# 4. 有负载 vs 无负载测试
+
+
+# 监控CPU、内存、中断
+sudo perf stat -e cycles,instructions,cache-misses,branch-misses \
+     -e L1-dcache-load-misses,L1-icache-load-misses \
+     ./latency_client
