@@ -4,10 +4,83 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import seaborn as sns
 from matplotlib.ticker import FuncFormatter
 
 def us_to_ms_formatter(x, pos):
     return f'{x/1000:.0f}'
+
+def set_auto_log_scale(ax, data_list, margin_factor=0.1):
+    all_data = np.concatenate([d for d in data_list if len(d) > 0])
+    
+    if len(all_data) == 0:
+        ax.set_yscale('log')
+        ax.set_ylim([0.1, 1000])
+        ax.set_yticks([0.1, 1, 10, 100, 1000])
+        return
+    
+    all_data = all_data[np.isfinite(all_data)]
+    all_data = all_data[all_data > 0]
+    
+    if len(all_data) == 0:
+        ax.set_yscale('log')
+        ax.set_ylim([0.1, 1000])
+        ax.set_yticks([0.1, 1, 10, 100, 1000])
+        return
+    
+    y_min = np.min(all_data)
+    y_max = np.max(all_data)
+    
+    if y_min > 0:
+        min_exp = np.floor(np.log10(y_min))
+    else:
+        min_exp = -1
+        
+    if y_max > 0:
+        max_exp = np.ceil(np.log10(y_max))
+    else:
+        max_exp = 2
+    
+    min_exp -= margin_factor
+    max_exp += margin_factor
+    
+    log_y_min = 10 ** min_exp
+    log_y_max = 10 ** max_exp
+    
+    log_y_min = max(0.001, log_y_min)
+    log_y_max = min(1e9, log_y_max)
+    
+    ax.set_yscale('log')
+    ax.set_ylim([log_y_min, log_y_max])
+    
+    ticks = []
+    for exp in range(int(min_exp), int(max_exp) + 1):
+        base = 10 ** exp
+        ticks.extend([base, 2*base, 5*base])
+    
+    ticks = [t for t in ticks if log_y_min <= t <= log_y_max]
+    if ticks:
+        ax.set_yticks(ticks)
+        
+        def format_label(x):
+            if x < 0.01:
+                return f'{x:.3f}'
+            elif x < 0.1:
+                return f'{x:.2f}'
+            elif x < 1:
+                return f'{x:.1f}'
+            elif x < 10:
+                return f'{x:.0f}'
+            elif x < 1000:
+                return f'{int(x)}'
+            elif x < 1000000:
+                return f'{int(x/1000)}K'
+            elif x < 1000000000:
+                return f'{int(x/1000000)}M'
+            else:
+                return f'{int(x/1000000000)}G'
+        
+        ax.set_yticklabels([format_label(t) for t in ticks])
 
 def create_performance_charts(report_name: str):
     base_dir = Path(__file__).resolve().parent
@@ -71,6 +144,7 @@ def create_performance_charts(report_name: str):
     # Subplot 3
     ax3 = axes[1, 0]
     latency_data = []
+
     for size in packet_sizes:
         detail_path = output_dir / f"{report_name}_{size}.csv"
         if not detail_path.exists():
@@ -83,10 +157,10 @@ def create_performance_charts(report_name: str):
         else:
             latencies = detail_df.iloc[:, 0]
         latency_data.append((latencies / 1000.0).to_numpy())  # us
-    
+
     bp = ax3.boxplot(latency_data, positions=range(len(packet_sizes)), 
-                     widths=0.6, patch_artist=True)
-    
+                    widths=0.6, patch_artist=True)
+
     for box in bp['boxes']:
         box.set(facecolor='lightblue', alpha=0.7)
     for whisker in bp['whiskers']:
@@ -95,15 +169,20 @@ def create_performance_charts(report_name: str):
         cap.set(color='gray', linewidth=1.5)
     for median in bp['medians']:
         median.set(color='red', linewidth=2)
-    
+
     ax3.set_xlabel('size (bytes)')
     ax3.set_ylabel('latency (us)')
     ax3.set_title(f'{context} latency distribution')
     ax3.set_xticks(range(len(packet_sizes)))
-    ax3.set_xticklabels(packet_sizes)
     ax3.set_xticklabels(packet_sizes, rotation=45, fontsize=9)
+    ax3.set_yscale('log')
+    #ax3.set_ylim([1000, 50000])
+    #ax3.set_yticks([1000, 2000, 3000, 5000, 7000, 10000, 
+    #       15000, 20000, 30000, 50000])
+    #ax3.set_yticklabels(['1K', '2K', '3K', '5K', '7K', '10K', 
+    #                 '15K', '20K', '30K', '50K'])
+    set_auto_log_scale(ax3, latency_data, margin_factor=0.1)
     ax3.grid(True, alpha=0.3, axis='y')
-    #ax3.yaxis.set_major_formatter(FuncFormatter(us_to_ms_formatter))
     
     # Subplot 4
     ax4 = axes[1, 1]
